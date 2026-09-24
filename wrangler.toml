@@ -1,0 +1,6 @@
+name = "my-ai2"
+main = "src/index.ts"
+compatibility_date = "2026-09-24"
+
+[ai]
+binding = "AI"
