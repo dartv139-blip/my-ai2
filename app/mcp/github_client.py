@@ -5,9 +5,10 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from mcp import Client
-from mcp import StdioServerParameters
-from mcp import stdio_client
+from contextlib import AsyncExitStack
+
+from mcp import Client, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,7 @@ class GitHubMCPClient:
         self.config = config or GitHubMCPConfig.from_env()
         self._client: Client | None = None
         self._transport = None
+        self._stack: AsyncExitStack | None = None
         self._tools: dict[str, Any] = {}
         self._lock = asyncio.Lock()
 
@@ -87,32 +89,34 @@ class GitHubMCPClient:
             if self._client is not None:
                 return
 
-            transport = stdio_client(self.config.docker_parameters())
-            read_stream, write_stream = await transport.__aenter__()
-            client = Client("nika-github", version="0.1.0")
-
+            stack = AsyncExitStack()
+            await stack.__aenter__()
             try:
-                await client.__aenter__(read_stream, write_stream)
+                transport = await stack.enter_async_context(
+                    stdio_client(self.config.docker_parameters())
+                )
+                client = Client(transport)
+                await stack.enter_async_context(client)
                 result = await client.list_tools()
             except Exception:
-                await transport.__aexit__(None, None, None)
+                await stack.aclose()
                 raise
 
+            self._stack = stack
             self._transport = transport
             self._client = client
             self._tools = {tool.name: tool for tool in result.tools}
 
     async def stop(self) -> None:
         async with self._lock:
-            client, transport = self._client, self._transport
+            stack = self._stack
             self._client = None
             self._transport = None
+            self._stack = None
             self._tools = {}
 
-            if client is not None:
-                await client.__aexit__(None, None, None)
-            if transport is not None:
-                await transport.__aexit__(None, None, None)
+            if stack is not None:
+                await stack.aclose()
 
     async def list_tools(self) -> list[dict[str, Any]]:
         await self.start()
